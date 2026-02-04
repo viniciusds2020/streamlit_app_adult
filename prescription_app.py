@@ -1,10 +1,11 @@
 """
 Aplicação Streamlit para extração de informações de receituários médicos.
+Versão otimizada com estratégia em camadas para economia de tokens.
 """
 
 import streamlit as st
 import json
-from extractor import process_prescription, extract_prescription_data, generate_summary
+from extractor import process_prescription_optimized
 
 # Configuração da página
 st.set_page_config(
@@ -47,58 +48,112 @@ st.markdown("""
         border-radius: 10px;
         border-left: 4px solid #FF9800;
     }
-    .json-container {
-        background-color: #263238;
-        color: #fff;
+    .cost-card {
+        background-color: #e3f2fd;
         padding: 1rem;
         border-radius: 8px;
-        overflow-x: auto;
+        border-left: 4px solid #2196F3;
     }
-    .metric-card {
-        background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-        color: white;
-        padding: 1rem;
-        border-radius: 10px;
-        text-align: center;
+    .method-badge {
+        display: inline-block;
+        padding: 0.25rem 0.75rem;
+        border-radius: 20px;
+        font-size: 0.85rem;
+        font-weight: 500;
+    }
+    .method-ocr {
+        background-color: #c8e6c9;
+        color: #2e7d32;
+    }
+    .method-gemini {
+        background-color: #bbdefb;
+        color: #1565c0;
+    }
+    .method-claude {
+        background-color: #e1bee7;
+        color: #7b1fa2;
     }
 </style>
 """, unsafe_allow_html=True)
 
 
+def get_method_badge(method: str) -> str:
+    """Retorna o badge HTML para o método usado."""
+    if 'ocr' in method.lower() and 'gemini' not in method.lower() and 'claude' not in method.lower():
+        return f'<span class="method-badge method-ocr">🟢 {method}</span>'
+    elif 'gemini' in method.lower():
+        return f'<span class="method-badge method-gemini">🔵 {method}</span>'
+    elif 'claude' in method.lower():
+        return f'<span class="method-badge method-claude">🟣 {method}</span>'
+    else:
+        return f'<span class="method-badge">{method}</span>'
+
+
 def main():
     # Header
     st.markdown('<h1 class="main-header">🏥 Leitor de Receituário Médico</h1>', unsafe_allow_html=True)
-    st.markdown('<p class="sub-header">Extraia informações estruturadas de prescrições médicas usando Inteligência Artificial</p>', unsafe_allow_html=True)
+    st.markdown('<p class="sub-header">Extraia informações estruturadas de prescrições médicas com IA - Otimizado para economia de tokens</p>', unsafe_allow_html=True)
 
     # Sidebar para configurações
     with st.sidebar:
         st.header("⚙️ Configurações")
 
-        api_key = st.text_input(
-            "Chave da API Anthropic",
+        st.subheader("🔑 Chaves de API")
+
+        anthropic_key = st.text_input(
+            "Chave Anthropic (Claude)",
             type="password",
-            help="Insira sua chave da API da Anthropic para processar as imagens"
+            help="Maior precisão, maior custo (~$0.01/imagem)"
+        )
+
+        gemini_key = st.text_input(
+            "Chave Google (Gemini)",
+            type="password",
+            help="Boa precisão, baixo custo (~$0.001/imagem)"
+        )
+
+        st.markdown("---")
+
+        st.subheader("🎯 Estratégia de Extração")
+
+        extraction_mode = st.radio(
+            "Modo de extração",
+            options=[
+                "auto",
+                "economia",
+                "precisao",
+                "apenas_ocr"
+            ],
+            format_func=lambda x: {
+                "auto": "🔄 Automático (recomendado)",
+                "economia": "💰 Economia máxima (Gemini)",
+                "precisao": "🎯 Máxima precisão (Claude)",
+                "apenas_ocr": "🆓 Apenas OCR local (grátis)"
+            }[x],
+            help="Escolha a estratégia de extração baseada em custo vs. precisão"
         )
 
         st.markdown("---")
 
         st.markdown("""
-        ### 📋 Como usar:
-        1. Insira sua chave da API
-        2. Faça upload da imagem do receituário
-        3. Clique em "Processar Receituário"
-        4. Visualize os dados extraídos e o resumo
+        ### 📊 Comparação de Custos
 
-        ### 📄 Formatos aceitos:
-        - JPG/JPEG
-        - PNG
-        - GIF
-        - WebP
+        | Método | Custo | Precisão |
+        |--------|-------|----------|
+        | OCR+Regex | $0.00 | ⭐⭐⭐ |
+        | Gemini | ~$0.001 | ⭐⭐⭐⭐ |
+        | Claude | ~$0.01 | ⭐⭐⭐⭐⭐ |
+
+        ### 📋 Como funciona:
+        1. **Camada 1**: OCR local extrai texto
+        2. **Camada 2**: Regex identifica campos
+        3. **Camada 3**: Gemini completa falhas
+        4. **Camada 4**: Claude como fallback final
         """)
 
         st.markdown("---")
-        st.markdown("### 🔒 Privacidade")
-        st.info("Suas imagens são processadas de forma segura e não são armazenadas após o processamento.")
+        st.markdown("### 📄 Formatos aceitos:")
+        st.markdown("JPG, PNG, GIF, WebP")
 
     # Área principal
     col1, col2 = st.columns([1, 1])
@@ -126,39 +181,86 @@ def main():
     with col2:
         st.subheader("🔍 Processamento")
 
-        if uploaded_file is not None and api_key:
+        # Verificar se tem pelo menos uma forma de processar
+        can_process = uploaded_file is not None
+
+        if extraction_mode == "precisao" and not anthropic_key:
+            st.warning("⚠️ Modo precisão requer chave Anthropic.")
+            can_process = False
+        elif extraction_mode == "economia" and not gemini_key:
+            st.warning("⚠️ Modo economia requer chave Gemini.")
+            can_process = False
+        elif extraction_mode == "auto" and not (anthropic_key or gemini_key):
+            st.info("💡 Modo automático funcionará apenas com OCR local. Adicione uma chave de API para melhor precisão.")
+
+        if uploaded_file is None:
+            st.info("📤 Faça upload de uma imagem para começar.")
+
+        if can_process:
             if st.button("🚀 Processar Receituário", type="primary", use_container_width=True):
-                with st.spinner("Analisando receituário com IA..."):
+                with st.spinner("Analisando receituário..."):
                     try:
                         # Ler dados da imagem
                         image_data = uploaded_file.getvalue()
                         media_type = uploaded_file.type
 
+                        # Determinar método forçado baseado no modo
+                        force_method = None
+                        if extraction_mode == "economia":
+                            force_method = "gemini"
+                        elif extraction_mode == "precisao":
+                            force_method = "claude"
+                        elif extraction_mode == "apenas_ocr":
+                            force_method = "ocr"
+
                         # Processar receituário
-                        result = process_prescription(image_data, media_type, api_key)
+                        result = process_prescription_optimized(
+                            image_data=image_data,
+                            media_type=media_type,
+                            anthropic_key=anthropic_key if anthropic_key else None,
+                            gemini_key=gemini_key if gemini_key else None,
+                            force_method=force_method
+                        )
 
                         # Armazenar resultado na sessão
                         st.session_state['result'] = result
                         st.session_state['processed'] = True
 
-                        st.success("✅ Processamento concluído com sucesso!")
+                        st.success("✅ Processamento concluído!")
 
                     except Exception as e:
                         st.error(f"❌ Erro ao processar: {str(e)}")
-
-        elif not api_key:
-            st.warning("⚠️ Por favor, insira sua chave da API na barra lateral.")
-        elif uploaded_file is None:
-            st.info("📤 Faça upload de uma imagem para começar.")
 
     # Exibir resultados
     if 'processed' in st.session_state and st.session_state.get('processed'):
         st.markdown("---")
 
         result = st.session_state['result']
+        metadados = result.get('metadados', {})
+
+        # Card de informações do processamento
+        st.markdown("### 📊 Informações do Processamento")
+
+        col_m1, col_m2, col_m3, col_m4 = st.columns(4)
+
+        with col_m1:
+            method = metadados.get('metodo_usado', 'N/A')
+            st.markdown(f"**Método:** {get_method_badge(method)}", unsafe_allow_html=True)
+
+        with col_m2:
+            confianca = metadados.get('confianca', 0) * 100
+            st.metric("Confiança", f"{confianca:.0f}%")
+
+        with col_m3:
+            tokens = metadados.get('tokens_estimados', 0)
+            st.metric("Tokens usados", f"{tokens:,}")
+
+        with col_m4:
+            custo = metadados.get('custo_estimado_usd', 0)
+            st.metric("Custo estimado", f"${custo:.4f}")
 
         # Tabs para diferentes visualizações
-        tab1, tab2, tab3 = st.tabs(["📊 Dados Estruturados", "📝 Resumo", "💾 JSON Completo"])
+        tab1, tab2, tab3, tab4 = st.tabs(["📊 Dados Estruturados", "📝 Resumo", "🔤 Texto OCR", "💾 JSON Completo"])
 
         with tab1:
             st.subheader("Dados Extraídos do Receituário")
@@ -185,7 +287,11 @@ def main():
                     if medico.get('website'):
                         st.markdown(f"**Website:** {medico['website']}")
                     if medico.get('telefones'):
-                        st.markdown(f"**Telefones:** {', '.join(medico['telefones']) if isinstance(medico['telefones'], list) else medico['telefones']}")
+                        phones = medico['telefones']
+                        if isinstance(phones, list):
+                            st.markdown(f"**Telefones:** {', '.join(phones)}")
+                        else:
+                            st.markdown(f"**Telefones:** {phones}")
 
                 if medico.get('endereco'):
                     st.markdown(f"**Endereço:** {medico['endereco']}")
@@ -248,6 +354,16 @@ def main():
             st.markdown(f"<div class='success-card'>{resumo}</div>", unsafe_allow_html=True)
 
         with tab3:
+            st.subheader("Texto Extraído pelo OCR")
+            texto_ocr = result.get('texto_ocr')
+            if texto_ocr:
+                ocr_backend = metadados.get('ocr_backend', 'desconhecido')
+                st.caption(f"Extraído com: {ocr_backend}")
+                st.code(texto_ocr, language=None)
+            else:
+                st.info("OCR local não foi utilizado ou não está disponível.")
+
+        with tab4:
             st.subheader("JSON Completo")
 
             # Botão para copiar JSON

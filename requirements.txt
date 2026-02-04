@@ -1,5 +1,19 @@
+# Core
 streamlit>=1.28.0
-anthropic>=0.18.0
 pandas>=2.0.0
+
+# AI APIs
+anthropic>=0.18.0
+google-generativeai>=0.3.0
+
+# OCR backends (instale pelo menos um)
+pytesseract>=0.3.10
+easyocr>=1.7.0
+# docling>=0.1.0  # Opcional, requer dependências extras
+
+# Image processing
+Pillow>=10.0.0
+
+# ML (para app original)
 scikit-learn>=1.3.0
 joblib>=1.3.0
